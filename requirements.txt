@@ -1,0 +1,17 @@
+# CrewAI - 多智能体协作框架
+crewai>=0.80.0,<1.0.0
+
+# LLM客户端
+openai>=1.0.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# 可选依赖
+# python-docx  # 解析.docx简历
+# PyMuPDF     # 解析.pdf简历
+# gradio>=4.0.0  # Web UI
+
+# 测试
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

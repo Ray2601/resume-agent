@@ -1,0 +1,54 @@
+# 环境变量（包含API密钥）
+.env
+config.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 输出目录
+output/optimized/
+output/reports/
+output/logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 数据处理
+data/processed/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/JD/
+data/raw_experiences/
+data/test_cases/
+data/excellent_resumes/
+data/sample_resumes/
+data/prompt_templates/
+
+# 本地运行产物和旧内网穿透二进制
+output/
+natapp.exe
+natapp.zip
+
+# Local agent and tunnel state
+.claude/
+natapp_run.log
+
+# Private resumes, local certificates, runtime logs and SQLite sidecars
+.gradio/
+cv-image/
+*.log
+*.db-shm

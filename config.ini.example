@@ -1,0 +1,3 @@
+[default]
+authtoken=your_natapp_token
+lport=7860
