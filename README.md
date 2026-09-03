@@ -2,6 +2,8 @@
 
 基于 **CrewAI** 的多智能体协作系统，实现「岗位解析 → 经历诊断 → STAR 撰写 → HR 评分 → 迭代优化 → 编造审计」的自动化闭环。提供 Web UI（Gradio）与命令行两种入口，支持 natapp 内网穿透对外服务。
 
+云端部署采用 **Vercel 静态前端 + Render FastAPI 后端 + Neon PostgreSQL + DeepSeek API**。完整步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
 ---
 
 ## 架构概览

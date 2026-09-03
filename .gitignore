@@ -52,3 +52,4 @@ natapp_run.log
 cv-image/
 *.log
 *.db-shm
+.tmp/

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Resume Agent · Prompt Harness</title>
+  <style>
+    :root{color-scheme:dark;--bg:#09111f;--panel:#111d31;--line:#263650;--text:#edf3ff;--muted:#96a7c2;--accent:#72e4b8;--blue:#73a7ff}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#17345a 0,transparent 35%),var(--bg);font:15px/1.55 Inter,system-ui;color:var(--text)}
+    main{max-width:1180px;margin:auto;padding:42px 22px 80px}.eyebrow{color:var(--accent);letter-spacing:.15em;text-transform:uppercase;font-size:12px}h1{font-size:clamp(34px,6vw,64px);line-height:1.05;margin:10px 0 14px;max-width:850px}p{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:32px}.panel{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 20px 55px #0005}.wide{grid-column:1/-1}
+    label{display:block;margin:14px 0 6px;color:#cbd7ea}textarea,select{width:100%;border:1px solid var(--line);border-radius:10px;background:#0b1526;color:var(--text);padding:12px;outline:none}textarea{min-height:210px;resize:vertical}textarea:focus,select:focus{border-color:var(--blue)}
+    button{margin-top:18px;border:0;border-radius:10px;background:linear-gradient(135deg,var(--accent),#55aaff);color:#07121e;font-weight:800;padding:13px 20px;cursor:pointer}button:disabled{opacity:.5}.status{display:inline-flex;gap:8px;align-items:center;padding:7px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted)}
+    .metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:16px 0}.metric{background:#0b1526;border:1px solid var(--line);border-radius:12px;padding:14px}.metric strong{display:block;font-size:25px;color:var(--accent)}pre{white-space:pre-wrap;word-break:break-word;background:#0a1424;border-radius:12px;padding:16px;max-height:520px;overflow:auto;color:#dce7fa}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);font-size:13px}th{color:var(--muted)}.hidden{display:none}@media(max-width:760px){.grid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body><main>
+  <div class="eyebrow">Multi-Agent Resume Intelligence</div>
+  <h1>把真实经历，写成经得起 HR 审视的简历。</h1>
+  <p>Writer、HR Reviewer 与 Fact Checker 自动协作；每一步都有 Run、评分与 Trace。</p>
+  <div class="grid">
+    <section class="panel"><h2>目标岗位</h2><label>岗位类型</label><select id="category"><option>互联网产品经理</option><option>硬件产品经理</option><option>BD（商务拓展）</option><option>其他</option></select><label>岗位 JD</label><textarea id="jd" placeholder="粘贴完整岗位描述…"></textarea></section>
+    <section class="panel"><h2>原始经历</h2><label>只填写真实发生的内容</label><textarea id="experience" placeholder="粘贴你的项目、实习或工作经历…"></textarea><label>访问口令</label><textarea id="token" style="min-height:48px" placeholder="部署者设置的 APP_ACCESS_TOKEN"></textarea><button id="run">开始优化</button></section>
+    <section id="resultPanel" class="panel wide hidden"><span id="status" class="status">等待中</span><h2>Eval Metrics</h2><div id="metrics" class="metrics"></div><h2>优化结果</h2><pre id="result"></pre><h2>Agent Trace</h2><table><thead><tr><th>Step</th><th>Agent</th><th>Round</th><th>Score</th><th>Latency</th><th>Status</th></tr></thead><tbody id="traces"></tbody></table></section>
+  </div>
+</main><script>
+let apiBase=''; const $=id=>document.getElementById(id);
+async function config(){const r=await fetch('/api/config');apiBase=(await r.json()).apiBaseUrl.replace(/\/$/,'')}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function metrics(m={}){return [['Total',m.total],['Match',m.match],['Data',m.data],['Impact',m.impact],['Concise',m.conciseness]].map(([k,v])=>`<div class="metric"><span>${k}</span><strong>${v??'-'}</strong></div>`).join('')}
+function traceRows(rows=[]){return rows.map(t=>`<tr><td>${t.step_name||'-'}</td><td>${t.agent_name||'-'}</td><td>${t.iteration||'-'}</td><td>${t.score??'-'}</td><td>${((t.latency_ms||0)/1000).toFixed(1)}s</td><td>${t.status||'-'}</td></tr>`).join('')}
+$('run').onclick=async()=>{const jd=$('jd').value.trim(),exp=$('experience').value.trim(),token=$('token').value;if(jd.length<20||exp.length<20){alert('JD 和经历至少填写 20 个字符');return}$('run').disabled=true;$('resultPanel').classList.remove('hidden');$('status').textContent='QUEUED';$('result').textContent='Agent 正在工作，请稍候…';try{if(!apiBase)await config();const headers={'Content-Type':'application/json','X-App-Token':token};let r=await fetch(`${apiBase}/api/runs`,{method:'POST',headers,body:JSON.stringify({jd,original_experience:exp,position_category:$('category').value})});if(!r.ok)throw new Error(await r.text());let job=await r.json();while(['queued','running'].includes(job.status)){await sleep(2500);r=await fetch(`${apiBase}/api/runs/${job.job_id}`,{headers});job=await r.json();$('status').textContent=job.status.toUpperCase()}if(job.status==='failed')throw new Error(job.error);$('metrics').innerHTML=metrics(job.eval_metrics);$('result').textContent=job.final_result;$('traces').innerHTML=traceRows(job.traces);$('status').textContent=`PASS · ${job.final_score}/100`}catch(e){$('status').textContent='FAILED';$('result').textContent=e.message}finally{$('run').disabled=false}};
+config().catch(()=>{});
+  </script></body></html>

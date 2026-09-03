@@ -7,6 +7,11 @@ openai>=1.0.0
 # 环境变量管理
 python-dotenv>=1.0.0
 
+# Cloud API / Neon PostgreSQL
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+psycopg[binary]>=3.2.0
+
 # 可选依赖
 # python-docx  # 解析.docx简历
 # PyMuPDF     # 解析.pdf简历

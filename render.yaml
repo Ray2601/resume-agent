@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: resume-agent-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      - key: WORKER_CONCURRENCY
+        value: "1"
+      - key: API_KEY
+        sync: false
+      - key: BASE_URL
+        value: https://api.deepseek.com
+      - key: MODEL_ID
+        value: deepseek-chat
+      - key: MODEL_ID_THINKING
+        value: deepseek-reasoner
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: APP_ACCESS_TOKEN
+        sync: false
