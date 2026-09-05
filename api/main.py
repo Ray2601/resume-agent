@@ -19,11 +19,14 @@ from src.cloud.store import (
 from src.crewai.pipeline import CrewAIResumePipeline
 
 app = FastAPI(title="Resume Agent API", version="1.1.0")
-origin = os.getenv("FRONTEND_ORIGIN", "").strip()
+origins = [
+    value.strip() for value in os.getenv("FRONTEND_ORIGIN", "").split(",")
+    if value.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin] if origin else [],
-    allow_credentials=bool(origin),
+    allow_origins=origins,
+    allow_credentials=bool(origins),
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-App-Token"],
 )

@@ -53,3 +53,7 @@ cv-image/
 *.log
 *.db-shm
 .tmp/
+.neon
+
+# Node.js dependencies
+node_modules/

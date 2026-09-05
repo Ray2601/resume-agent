@@ -27,8 +27,14 @@ if (typeof document !== "undefined") {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   async function config() {
-    const response = await fetch("/api/config");
-    apiBase = (await response.json()).apiBaseUrl.replace(/\/$/, "");
+    try {
+      const response = await fetch("/api/config");
+      if (!response.ok) throw new Error("Vercel config endpoint unavailable");
+      apiBase = (await response.json()).apiBaseUrl.replace(/\/$/, "");
+    } catch (error) {
+      if (!["127.0.0.1", "localhost"].includes(location.hostname)) throw error;
+      apiBase = "http://127.0.0.1:8000";
+    }
   }
 
   function bindUpload(inputId, targetId, marker, multiple = false) {
