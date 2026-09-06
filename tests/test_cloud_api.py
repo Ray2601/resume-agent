@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from api.main import (
     RunRequest, _authorize, _execute, build_pipeline_experience, health,
-    read_session_runs, split_reference_resumes,
+    read_session_runs, split_reference_resumes, _job_progress, jobs, jobs_lock,
 )
 
 
@@ -101,3 +101,17 @@ def test_session_history_isolation():
         bob = read_session_runs("bob", 10, "")
     assert alice["runs"] == [{"session_id": "alice"}]
     assert bob["runs"] == [{"session_id": "bob"}]
+
+
+def test_real_stage_progress_updates_and_iteration():
+    value = request(session_id="progress", max_iterations=3)
+    job_id = "job-progress-test"
+    with patch("api.main.update_cloud_progress") as persist:
+        with jobs_lock:
+            jobs[job_id] = {"job_id": job_id, "session_id": value.session_id, "stages": [{"key": k, "label": l, "status": "pending"} for k, l in __import__("src.cloud.store", fromlist=["STAGES"]).STAGES]}
+        _job_progress(job_id, value, "phase2_writing_iteration", "running", 68, "phase2 iteration 2/3", 2)
+        assert jobs[job_id]["current_iteration"] == 2
+        assert jobs[job_id]["total_iterations"] == 3
+        assert jobs[job_id]["progress_percent"] == 68
+        assert jobs[job_id]["stage_status"] == "running"
+        persist.assert_called_once()

@@ -54,6 +54,20 @@ from config.prompts.hr_prompt import HR_PROMPT_VERSION
 from config.prompts.deep_writer_prompt import FACT_CHECKER_PROMPT_VERSION
 
 
+class PipelineStageError(RuntimeError):
+    """Agent call failure with enough context for API and Neon diagnostics."""
+    def __init__(self, stage: str, agent: str, iteration: int, call_number: int, original: Exception):
+        self.stage = stage
+        self.agent = agent
+        self.iteration = iteration
+        self.call_number = call_number
+        self.original = original
+        super().__init__(
+            f"LLM call failed: stage={stage}, agent={agent}, iteration={iteration}, "
+            f"call_number={call_number}: {original}"
+        )
+
+
 class CrewAIResumePipeline:
     """CrewAI-based resume optimization pipeline.
 
@@ -82,11 +96,14 @@ class CrewAIResumePipeline:
         self.history: list[dict] = []
         self.run_id = ""
         self._run_db_path: str | None = None
+        self._llm_call_count = 0
 
     def _trace(self, step_name: str, agent_name: str, task_input: str, action,
                iteration: int = 0, score_getter=None):
         """Execute one agent call and persist its full Harness trace."""
         started = time.perf_counter()
+        self._llm_call_count += 1
+        call_number = self._llm_call_count
         try:
             output = action()
             text = str(output.raw) if hasattr(output, "raw") else str(output)
@@ -99,7 +116,7 @@ class CrewAIResumePipeline:
             save_trace(self.run_id, step_name, agent_name, iteration, task_input, str(exc),
                        None, int((time.perf_counter() - started) * 1000), 0, "failed",
                        self._run_db_path)
-            raise
+            raise PipelineStageError(step_name, agent_name, iteration, call_number, exc) from exc
 
     def _trace_cached(self, step_name: str, agent_name: str, task_input: str, output: str):
         save_trace(self.run_id, step_name, agent_name, 0, task_input, output,
@@ -300,6 +317,7 @@ class CrewAIResumePipeline:
         writer_version_record = get_prompt_version(writer_prompt_version, db_path)
         writer_prompt_content = writer_version_record["prompt_content"]
         self.history = []
+        self._llm_call_count = 0
         self.run_id = f"run_{uuid.uuid4().hex}"
         self._run_db_path = db_path
         init_db(db_path).close()

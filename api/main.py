@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -14,11 +15,16 @@ from config.prompts.hr_prompt import HR_PROMPT_VERSION
 from config.prompts.writer_prompt import WRITER_PROMPT_VERSION
 from src.cloud.store import (
     get_cloud_run, list_cloud_runs, save_cloud_failure, save_cloud_job,
-    save_cloud_result,
+    save_cloud_result, update_cloud_progress, mark_stale_cloud_runs_interrupted,
+    STAGES,
 )
-from src.crewai.pipeline import CrewAIResumePipeline
+from src.crewai.pipeline import CrewAIResumePipeline, PipelineStageError
 
-app = FastAPI(title="Resume Agent API", version="1.1.0")
+app = FastAPI(title="Resume Agent API", version="1.2.0")
+try:
+    mark_stale_cloud_runs_interrupted()
+except Exception:
+    pass
 origins = [
     value.strip() for value in os.getenv("FRONTEND_ORIGIN", "").split(",")
     if value.strip()
@@ -33,6 +39,34 @@ app.add_middleware(
 executor = ThreadPoolExecutor(max_workers=int(os.getenv("WORKER_CONCURRENCY", "1")))
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+_STAGE_BY_KEY = dict(STAGES)
+_STAGE_START = {"step0_classification": 10, "phase0_jd_analysis": 25,
+                "phase1_experience_diagnosis": 40, "phase2_writing_iteration": 45,
+                "phase3_fabrication_audit": 90}
+
+
+def _stage_rows():
+    return [{"key": key, "label": label, "status": "pending"} for key, label in STAGES]
+
+
+def _job_progress(job_id, request, key, status="running", percent=0, message="", iteration=0, error=""):
+    label = _STAGE_BY_KEY.get(key, key)
+    update_cloud_progress(job_id, request.session_id, key, label, status, percent, message,
+                          iteration, request.max_iterations, error)
+    with jobs_lock:
+        current = jobs.setdefault(job_id, {"job_id": job_id, "session_id": request.session_id})
+        current.update({"status": "failed" if status == "failed" else current.get("status", "running"),
+                        "current_stage": key, "current_stage_label": label,
+                        "stage_status": status, "progress_percent": percent,
+                        "current_iteration": iteration, "total_iterations": request.max_iterations,
+                        "progress_message": message, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                        "stages": current.get("stages", _stage_rows())})
+        current_index = [item[0] for item in STAGES].index(key) if key in [item[0] for item in STAGES] else -1
+        for index, row in enumerate(current["stages"]):
+            if row["key"] == key:
+                row["status"] = status
+            elif status == "running" and index < current_index and row["status"] == "pending":
+                row["status"] = "completed"
 
 
 class RunRequest(BaseModel):
@@ -77,8 +111,32 @@ def _execute(job_id: str, request: RunRequest) -> None:
     model_id = os.getenv("MODEL_ID_THINKING") or os.getenv("MODEL_ID", "deepseek-reasoner")
     try:
         with jobs_lock:
-            jobs[job_id] = {"job_id": job_id, "status": "running", "session_id": request.session_id}
+            jobs[job_id] = {"job_id": job_id, "status": "running", "session_id": request.session_id,
+                            "stage_status": "pending", "progress_percent": 0,
+                            "current_iteration": 0, "total_iterations": request.max_iterations,
+                            "stages": _stage_rows()}
         save_cloud_job(job_id, request, model_id, status="running")
+        last_stage = {"key": None, "iteration": 0}
+        def on_progress(step):
+            if step == "step0":
+                key, pct, msg, it = "step0_classification", 10, "\u6b63\u5728\u8fdb\u884c Step 0 \u00b7 \u9886\u57df\u5206\u7c7b", 0
+            elif step == "phase0":
+                key, pct, msg, it = "phase0_jd_analysis", 25, "\u6b63\u5728\u8fdb\u884c Phase 0 \u00b7 JD \u5206\u6790", 0
+            elif step == "phase1":
+                key, pct, msg, it = "phase1_experience_diagnosis", 40, "\u6b63\u5728\u8fdb\u884c Phase 1 \u00b7 \u7ecf\u5386\u8bca\u65ad", 0
+            elif step.startswith("phase2_"):
+                it = int(step.rsplit("_", 1)[-1])
+                key = "phase2_writing_iteration"
+                base = 45 + int((it - 1) * 40 / request.max_iterations)
+                pct = min(85, base + (int(40 / request.max_iterations) if step.startswith("phase2_score") else 0))
+                msg = f"\u6b63\u5728\u8fdb\u884c\u7b2c {it}/{request.max_iterations} \u8f6e\u64b0\u5199\u4e0e HR \u8bc4\u4f30"
+            elif step == "phase3":
+                key, pct, msg, it = "phase3_fabrication_audit", 90, "\u6b63\u5728\u8fdb\u884c Phase 3 \u00b7 \u7f16\u9020\u5ba1\u8ba1", 0
+            else:
+                return
+            if key != last_stage["key"] or it != last_stage["iteration"]:
+                _job_progress(job_id, request, key, "running", pct, msg, it)
+                last_stage.update(key=key, iteration=it)
         pipeline = CrewAIResumePipeline(model_id=model_id)
         pipeline.reference_resumes = split_reference_resumes(request.reference_resumes)
         result = pipeline.run(
@@ -96,11 +154,21 @@ def _execute(job_id: str, request: RunRequest) -> None:
             writer_prompt_version=WRITER_PROMPT_VERSION,
             hr_prompt_version=HR_PROMPT_VERSION,
             model_id=model_id,
+            progress_callback=on_progress,
         )
+        _job_progress(job_id, request, "phase3_fabrication_audit", "completed", 100,
+                      "\u4f18\u5316\u5b8c\u6210", 0)
+        with jobs_lock:
+            jobs[job_id]["status"] = "completed"
         save_cloud_result(job_id, request.session_id, result, model_id, request=request)
+        with jobs_lock:
+            progress = dict(jobs.get(job_id, {}))
         public_result = {
+            **progress,
             "job_id": job_id, "run_id": result["run_id"],
             "session_id": request.session_id, "status": "completed",
+            "stage_status": "completed", "progress_percent": 100,
+            "progress_message": "\u4f18\u5316\u5b8c\u6210",
             "final_result": result["final_result"], "final_score": result["final_score"],
             "iterations": result["iterations"], "eval_metrics": result["eval_metrics"],
             "fabrication_report": result["fabrication_report"],
@@ -110,12 +178,20 @@ def _execute(job_id: str, request: RunRequest) -> None:
         with jobs_lock:
             jobs[job_id] = public_result
     except Exception as exc:
-        save_cloud_failure(job_id, request.session_id, str(exc), model_id, request=request)
+        current_key = getattr(exc, "stage", None) or (last_stage.get("key") if "last_stage" in locals() else "")
+        failed_agent = getattr(exc, "agent", "")
+        failed_iteration = getattr(exc, "iteration", last_stage.get("iteration", 0) if "last_stage" in locals() else 0)
+        if current_key:
+            _job_progress(job_id, request, current_key, "failed", 0, "\u4efb\u52a1\u5931\u8d25", failed_iteration, str(exc))
+        save_cloud_failure(job_id, request.session_id, str(exc), model_id, request=request,
+                           failed_stage=current_key, failed_agent=failed_agent)
         with jobs_lock:
-            jobs[job_id] = {
-                "job_id": job_id, "session_id": request.session_id,
-                "status": "failed", "error": str(exc),
-            }
+            failed = dict(jobs.get(job_id, {}))
+            failed.update({"job_id": job_id, "session_id": request.session_id,
+                           "status": "failed", "stage_status": "failed", "error": str(exc),
+                           "error_message": str(exc), "failed_stage": current_key,
+                           "failed_agent": failed_agent})
+            jobs[job_id] = failed
     finally:
         Path(sqlite_path).unlink(missing_ok=True)
         Path(sqlite_path + "-wal").unlink(missing_ok=True)
@@ -131,7 +207,12 @@ def health():
 def create_run(request: RunRequest, x_app_token: str = Header(default="")):
     _authorize(x_app_token)
     job_id = f"job_{uuid.uuid4().hex}"
-    queued = {"job_id": job_id, "status": "queued", "session_id": request.session_id}
+    queued = {"job_id": job_id, "status": "queued", "session_id": request.session_id,
+              "current_stage": "", "current_stage_label": "", "stage_status": "pending",
+              "progress_percent": 0, "current_iteration": 0,
+              "total_iterations": request.max_iterations, "progress_message": "\u4efb\u52a1\u6392\u961f\u4e2d",
+              "heartbeat_at": None}
+    queued["stages"] = _stage_rows()
     with jobs_lock:
         jobs[job_id] = queued
     model_id = os.getenv("MODEL_ID_THINKING") or os.getenv("MODEL_ID", "deepseek-reasoner")

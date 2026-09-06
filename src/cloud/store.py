@@ -5,6 +5,14 @@ from datetime import datetime, timezone
 
 from src.crewai.database import classify_errors
 
+STAGES = [
+    ("step0_classification", "Step 0 \u00b7 \u9886\u57df\u5206\u7c7b"),
+    ("phase0_jd_analysis", "Phase 0 \u00b7 JD \u5206\u6790"),
+    ("phase1_experience_diagnosis", "Phase 1 \u00b7 \u7ecf\u5386\u8bca\u65ad"),
+    ("phase2_writing_iteration", "Phase 2 \u00b7 \u64b0\u5199\u8fed\u4ee3"),
+    ("phase3_fabrication_audit", "Phase 3 \u00b7 \u7f16\u9020\u5ba1\u8ba1"),
+]
+
 
 def _connect():
     import psycopg
@@ -60,6 +68,23 @@ def init_cloud_db() -> None:
             conn.execute(
                 f"ALTER TABLE deploy_runs ADD COLUMN IF NOT EXISTS {column} {definition}"
             )
+        progress_columns = {
+            "current_stage": "TEXT DEFAULT ''", "current_stage_label": "TEXT DEFAULT ''",
+            "stage_status": "TEXT DEFAULT 'pending'", "progress_percent": "INTEGER DEFAULT 0",
+            "current_iteration": "INTEGER DEFAULT 0", "total_iterations": "INTEGER DEFAULT 3",
+            "progress_message": "TEXT DEFAULT ''", "stage_started_at": "TIMESTAMPTZ",
+            "heartbeat_at": "TIMESTAMPTZ",
+            "failed_stage": "TEXT DEFAULT ''", "failed_agent": "TEXT DEFAULT ''",
+        }
+        for column, definition in progress_columns.items():
+            conn.execute(f"ALTER TABLE deploy_runs ADD COLUMN IF NOT EXISTS {column} {definition}")
+        conn.execute("""CREATE TABLE IF NOT EXISTS deploy_run_stages (
+            id BIGSERIAL PRIMARY KEY, job_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            stage_key TEXT NOT NULL, stage_label TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', iteration INTEGER DEFAULT 0,
+            message TEXT DEFAULT '', started_at TIMESTAMPTZ,
+            completed_at TIMESTAMPTZ, error_message TEXT DEFAULT '')""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_deploy_run_stages_job ON deploy_run_stages(job_id, id)")
         conn.execute("""CREATE TABLE IF NOT EXISTS deploy_agent_traces (
             trace_id BIGSERIAL PRIMARY KEY,
             run_id TEXT NOT NULL REFERENCES deploy_runs(run_id) ON UPDATE CASCADE,
@@ -92,6 +117,48 @@ def save_cloud_job(job_id: str, request, model_id: str, status: str = "queued") 
             payload.get("position_category", ""), payload.get("max_iterations", 3),
             payload.get("fabrication_tolerance", 0), json.dumps(payload),
         ))
+
+
+def update_cloud_progress(job_id: str, session_id: str, stage_key: str, stage_label: str,
+                          stage_status: str, progress_percent: int, message: str = "",
+                          iteration: int = 0, total_iterations: int = 3,
+                          error_message: str = "") -> None:
+    """Persist a real pipeline checkpoint and append its stage history."""
+    init_cloud_db()
+    now = datetime.now(timezone.utc)
+    with _connect() as conn:
+        if stage_status == "running":
+            conn.execute("""UPDATE deploy_run_stages SET status='completed', completed_at=%s
+                WHERE job_id=%s AND status='running'""", (now, job_id))
+            conn.execute("""INSERT INTO deploy_run_stages
+                (job_id,session_id,stage_key,stage_label,status,iteration,message,started_at)
+                VALUES (%s,%s,%s,%s,'running',%s,%s,%s)""",
+                (job_id, session_id, stage_key, stage_label, iteration, message, now))
+        else:
+            conn.execute("""UPDATE deploy_run_stages SET status=%s, message=%s,
+                error_message=%s, completed_at=%s WHERE job_id=%s AND stage_key=%s
+                AND status='running'""", (stage_status, message, error_message, now, job_id, stage_key))
+        conn.execute("""UPDATE deploy_runs SET current_stage=%s,current_stage_label=%s,
+            stage_status=%s,progress_percent=%s,current_iteration=%s,total_iterations=%s,
+            progress_message=%s,stage_started_at=CASE WHEN %s='running' THEN %s ELSE stage_started_at END,
+            heartbeat_at=%s, status=CASE WHEN %s='failed' THEN 'failed' ELSE status END,
+            error_message=CASE WHEN %s<>'' THEN %s ELSE error_message END WHERE job_id=%s""",
+            (stage_key, stage_label, stage_status, progress_percent, iteration,
+             total_iterations, message, stage_status, now, now, stage_status,
+             error_message, error_message, job_id))
+
+
+def mark_stale_cloud_runs_interrupted() -> None:
+    """Prevent jobs from previous Render instances remaining running forever."""
+    try:
+        init_cloud_db()
+        with _connect() as conn:
+            conn.execute("""UPDATE deploy_runs SET status='interrupted', stage_status='interrupted',
+                error_message='\u670d\u52a1\u5b9e\u4f8b\u5df2\u91cd\u542f\uff0c\u4efb\u52a1\u4e2d\u65ad', completed_at=NOW() WHERE status='running'""")
+            conn.execute("""UPDATE deploy_run_stages SET status='interrupted',
+                error_message='\u670d\u52a1\u5b9e\u4f8b\u5df2\u91cd\u542f\uff0c\u4efb\u52a1\u4e2d\u65ad', completed_at=NOW() WHERE status='running'""")
+    except Exception:
+        pass
 
 
 def save_cloud_result(
@@ -161,14 +228,16 @@ def save_cloud_result(
 
 
 def save_cloud_failure(
-    job_id: str, session_id: str, message: str, model_id: str, request=None
+    job_id: str, session_id: str, message: str, model_id: str, request=None,
+    failed_stage: str = "", failed_agent: str = "",
 ) -> None:
     try:
         save_cloud_job(job_id, request or {"session_id": session_id}, model_id, "failed")
         with _connect() as conn:
             conn.execute("""UPDATE deploy_runs SET status='failed',
-                error_message=%s, completed_at=%s WHERE job_id=%s""",
-                (message, datetime.now(timezone.utc), job_id))
+                error_message=%s, failed_stage=%s, failed_agent=%s,
+                completed_at=%s WHERE job_id=%s""",
+                (message, failed_stage, failed_agent, datetime.now(timezone.utc), job_id))
     except Exception:
         # Preserve the original pipeline exception if persistence is unavailable.
         pass
@@ -191,6 +260,13 @@ def get_cloud_run(job_id: str) -> dict | None:
             WHERE run_id=%s ORDER BY trace_id""", (data["run_id"],))
         names = ["step_name","agent_name","iteration","score","latency_ms","token_count","status"]
         data["traces"] = [dict(zip(names, item)) for item in traces.fetchall()]
+        stages = conn.execute("""SELECT DISTINCT ON (stage_key) stage_key AS key,
+            stage_label AS label, status, iteration, message, started_at, completed_at, error_message
+            FROM deploy_run_stages WHERE job_id=%s ORDER BY stage_key, id DESC""", (job_id,))
+        stage_names = [item.name for item in stages.description]
+        latest = {item[0]: dict(zip(stage_names, item)) for item in stages.fetchall()}
+        data["stages"] = [latest.get(key, {"key": key, "label": label, "status": "pending"})
+                          for key, label in STAGES]
         data["error"] = data.pop("error_message", "") or ""
         return data
 
