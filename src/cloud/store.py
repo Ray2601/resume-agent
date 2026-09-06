@@ -265,8 +265,26 @@ def get_cloud_run(job_id: str) -> dict | None:
             FROM deploy_run_stages WHERE job_id=%s ORDER BY stage_key, id DESC""", (job_id,))
         stage_names = [item.name for item in stages.description]
         latest = {item[0]: dict(zip(stage_names, item)) for item in stages.fetchall()}
-        data["stages"] = [latest.get(key, {"key": key, "label": label, "status": "pending"})
-                          for key, label in STAGES]
+        current_key = data.get("current_stage", "") or ""
+        current_index = next((i for i, item in enumerate(STAGES) if item[0] == current_key), -1)
+        overall = data.get("status", "")
+        stage_status = data.get("stage_status", "")
+        result_stages = []
+        for index, (key, label) in enumerate(STAGES):
+            item = latest.get(key, {"key": key, "label": label})
+            if overall in ("completed", "success"):
+                item["status"] = "completed"
+            elif overall in ("failed", "interrupted"):
+                item["status"] = "failed" if index == current_index else ("completed" if index < current_index else "pending")
+            elif index < current_index:
+                item["status"] = "completed"
+            elif index == current_index:
+                item["status"] = stage_status or item.get("status", "running")
+            else:
+                item["status"] = "pending"
+            item["key"], item["label"] = key, label
+            result_stages.append(item)
+        data["stages"] = result_stages
         data["error"] = data.pop("error_message", "") or ""
         return data
 
