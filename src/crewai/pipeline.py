@@ -102,21 +102,29 @@ class CrewAIResumePipeline:
                iteration: int = 0, score_getter=None):
         """Execute one agent call and persist its full Harness trace."""
         started = time.perf_counter()
-        self._llm_call_count += 1
-        call_number = self._llm_call_count
-        try:
-            output = action()
-            text = str(output.raw) if hasattr(output, "raw") else str(output)
-            score = score_getter(text) if score_getter else None
-            save_trace(self.run_id, step_name, agent_name, iteration, task_input, text,
-                       score, int((time.perf_counter() - started) * 1000), 0, "success",
-                       self._run_db_path)
-            return output
-        except Exception as exc:
-            save_trace(self.run_id, step_name, agent_name, iteration, task_input, str(exc),
-                       None, int((time.perf_counter() - started) * 1000), 0, "failed",
-                       self._run_db_path)
-            raise PipelineStageError(step_name, agent_name, iteration, call_number, exc) from exc
+        last_error = None
+        for attempt in range(1, 4):
+            self._llm_call_count += 1
+            call_number = self._llm_call_count
+            try:
+                output = action()
+                text = str(output.raw) if hasattr(output, "raw") else str(output)
+                score = score_getter(text) if score_getter else None
+                save_trace(self.run_id, step_name, agent_name, iteration, task_input, text,
+                           score, int((time.perf_counter() - started) * 1000), 0, "success",
+                           self._run_db_path)
+                return output
+            except Exception as exc:
+                last_error = exc
+                is_empty_response = "Invalid response from LLM call - None or empty" in str(exc)
+                if is_empty_response and attempt < 3:
+                    time.sleep(attempt)
+                    continue
+                save_trace(self.run_id, step_name, agent_name, iteration, task_input, str(exc),
+                           None, int((time.perf_counter() - started) * 1000), 0, "failed",
+                           self._run_db_path)
+                raise PipelineStageError(step_name, agent_name, iteration, call_number, exc) from exc
+        raise PipelineStageError(step_name, agent_name, iteration, self._llm_call_count, last_error)
 
     def _trace_cached(self, step_name: str, agent_name: str, task_input: str, output: str):
         save_trace(self.run_id, step_name, agent_name, 0, task_input, output,

@@ -5,6 +5,11 @@ from datetime import datetime, timezone
 
 from src.crewai.database import classify_errors
 
+STAGE_ALIASES = {"position_classifier": "step0_classification", "industry_decoding": "step0_classification",
+                "jd_analysis": "phase0_jd_analysis", "experience_diagnosis": "phase1_experience_diagnosis",
+                "star_writer": "phase2_writing_iteration", "hr_reviewer": "phase2_writing_iteration",
+                "fact_check": "phase3_fabrication_audit"}
+
 STAGES = [
     ("step0_classification", "Step 0 \u00b7 \u9886\u57df\u5206\u7c7b"),
     ("phase0_jd_analysis", "Phase 0 \u00b7 JD \u5206\u6790"),
@@ -266,6 +271,7 @@ def get_cloud_run(job_id: str) -> dict | None:
         stage_names = [item.name for item in stages.description]
         latest = {item[0]: dict(zip(stage_names, item)) for item in stages.fetchall()}
         current_key = data.get("current_stage", "") or ""
+        current_key = STAGE_ALIASES.get(current_key, current_key)
         current_index = next((i for i, item in enumerate(STAGES) if item[0] == current_key), -1)
         overall = data.get("status", "")
         stage_status = data.get("stage_status", "")
@@ -295,7 +301,7 @@ def list_cloud_runs(session_id: str, limit: int = 20) -> list[dict]:
         cursor = conn.execute("""SELECT job_id,run_id,session_id,status,
             position_category,final_score,iterations,eval_metrics,
             writer_prompt_version,hr_prompt_version,fact_checker_prompt_version,
-            error_message,created_at,completed_at
+            error_message,failed_stage,failed_agent,created_at,completed_at
             FROM deploy_runs WHERE session_id=%s
             ORDER BY created_at DESC LIMIT %s""", (session_id, limit))
         columns = [item.name for item in cursor.description]

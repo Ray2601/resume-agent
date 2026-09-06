@@ -40,6 +40,10 @@ executor = ThreadPoolExecutor(max_workers=int(os.getenv("WORKER_CONCURRENCY", "1
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 _STAGE_BY_KEY = dict(STAGES)
+_STAGE_ALIASES = {"position_classifier": "step0_classification", "industry_decoding": "step0_classification",
+                  "jd_analysis": "phase0_jd_analysis", "experience_diagnosis": "phase1_experience_diagnosis",
+                  "star_writer": "phase2_writing_iteration", "hr_reviewer": "phase2_writing_iteration",
+                  "fact_check": "phase3_fabrication_audit"}
 _STAGE_START = {"step0_classification": 10, "phase0_jd_analysis": 25,
                 "phase1_experience_diagnosis": 40, "phase2_writing_iteration": 45,
                 "phase3_fabrication_audit": 90}
@@ -178,7 +182,8 @@ def _execute(job_id: str, request: RunRequest) -> None:
         with jobs_lock:
             jobs[job_id] = public_result
     except Exception as exc:
-        current_key = getattr(exc, "stage", None) or (last_stage.get("key") if "last_stage" in locals() else "")
+        raw_failed_stage = getattr(exc, "stage", None) or (last_stage.get("key") if "last_stage" in locals() else "")
+        current_key = _STAGE_ALIASES.get(raw_failed_stage, raw_failed_stage)
         failed_agent = getattr(exc, "agent", "")
         failed_iteration = getattr(exc, "iteration", last_stage.get("iteration", 0) if "last_stage" in locals() else 0)
         if current_key:

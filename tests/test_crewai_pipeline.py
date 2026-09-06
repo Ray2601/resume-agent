@@ -109,10 +109,12 @@ class TestAgentFactories:
 def test_agent_empty_response_has_stage_agent_and_call_context():
     from src.crewai.pipeline import CrewAIResumePipeline, PipelineStageError
     pipeline = CrewAIResumePipeline()
+    action = MagicMock(side_effect=ValueError("Invalid response from LLM call - None or empty."))
     with patch("src.crewai.pipeline.save_trace"):
         with pytest.raises(PipelineStageError) as exc:
-            pipeline._trace("phase0_jd_analysis", "JD Analyst", "input", lambda: (_ for _ in ()).throw(ValueError("Invalid response from LLM call - None or empty.")), 0)
+            pipeline._trace("phase0_jd_analysis", "JD Analyst", "input", action, 0)
+    assert action.call_count == 3
     message = str(exc.value)
     assert "stage=phase0_jd_analysis" in message
     assert "agent=JD Analyst" in message
-    assert "call_number=1" in message
+    assert "call_number=3" in message
