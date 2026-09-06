@@ -470,7 +470,7 @@ class CrewAIResumePipeline:
             print(f"{'=' * 60}")
 
         # Cache check (persistent)
-        cached = get_cached("familiarity", jd[:3000], db_path)
+        cached = get_cached("familiarity", jd[:3000], self._run_db_path)
         if cached:
             try:
                 self._trace_cached("position_classifier", "Position Classifier", jd, cached)
@@ -502,7 +502,7 @@ class CrewAIResumePipeline:
         }
 
         # Cache the result
-        set_cached("familiarity", jd[:3000], json.dumps(parsed, ensure_ascii=False), db_path)
+        set_cached("familiarity", jd[:3000], json.dumps(parsed, ensure_ascii=False), self._run_db_path)
 
         if settings.verbose:
             path_label = "已知领域 → 快速路径" if is_known else "陌生领域 → 行业解码"
@@ -519,7 +519,7 @@ class CrewAIResumePipeline:
         if settings.verbose:
             print(f"  [Step 0b] 行业解码学习...")
 
-        cached = get_cached("industry_decoding", jd[:3000], db_path)
+        cached = get_cached("industry_decoding", jd[:3000], self._run_db_path)
         if cached:
             self._trace_cached("industry_decoding", "Industry Decoder", jd, cached)
             if settings.verbose:
@@ -534,7 +534,7 @@ class CrewAIResumePipeline:
         )
 
         glossary = str(result)
-        set_cached("industry_decoding", jd[:3000], glossary, db_path)
+        set_cached("industry_decoding", jd[:3000], glossary, self._run_db_path)
         if settings.verbose:
             print(f"    解码完成 ({len(glossary)} 字)")
 
@@ -556,7 +556,7 @@ class CrewAIResumePipeline:
             return self._jd_cache[cache_key]
 
         # Level 2: SQLite persistent cache
-        cached = get_cached("jd_analysis", jd[:3000], db_path)
+        cached = get_cached("jd_analysis", jd[:3000], self._run_db_path)
         if cached:
             self._trace_cached("jd_analysis", "JD Analyst", jd, cached)
             self._jd_cache[cache_key] = cached
@@ -582,7 +582,7 @@ class CrewAIResumePipeline:
         result = self._trace("jd_analysis", "JD Analyst", task.description, crew.kickoff)
         jd_analysis = str(result.raw) if hasattr(result, 'raw') else str(result)
         self._jd_cache[cache_key] = jd_analysis
-        set_cached("jd_analysis", jd[:3000], jd_analysis, db_path)
+        set_cached("jd_analysis", jd[:3000], jd_analysis, self._run_db_path)
 
         if settings.verbose:
             preview = jd_analysis[:150].replace("\n", " ")
@@ -601,7 +601,7 @@ class CrewAIResumePipeline:
 
         # Cache check (key includes anchor_content since it affects output)
         cache_text = raw_experience[:3000] + ("|anchor|" + anchor_content[:1000] if anchor_content else "")
-        cached = get_cached("experience_diagnosis", cache_text, db_path)
+        cached = get_cached("experience_diagnosis", cache_text, self._run_db_path)
         if cached:
             self._trace_cached("experience_diagnosis", "Experience Doctor", cache_text, cached)
             if settings.verbose:
@@ -621,7 +621,7 @@ class CrewAIResumePipeline:
         result = self._trace("experience_diagnosis", "Experience Doctor", task.description, crew.kickoff)
         phase1_summary = str(result.raw) if hasattr(result, 'raw') else str(result)
 
-        set_cached("experience_diagnosis", cache_text, phase1_summary, db_path)
+        set_cached("experience_diagnosis", cache_text, phase1_summary, self._run_db_path)
 
         if settings.verbose:
             print(f"    诊断完成 ({len(phase1_summary)} 字)")
