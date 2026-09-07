@@ -8,7 +8,8 @@ from pydantic import ValidationError
 
 from api.main import (
     RunRequest, _authorize, _execute, build_pipeline_experience, health,
-    read_session_runs, split_reference_resumes, _job_progress, jobs, jobs_lock,
+    read_run, read_session_runs, split_reference_resumes, _job_progress, jobs, jobs_lock,
+    _normalize_run_status,
 )
 
 
@@ -99,8 +100,52 @@ def test_session_history_isolation():
     with patch("api.main.list_cloud_runs", side_effect=fake_history):
         alice = read_session_runs("alice", 10, "")
         bob = read_session_runs("bob", 10, "")
-    assert alice["runs"] == [{"session_id": "alice"}]
-    assert bob["runs"] == [{"session_id": "bob"}]
+    assert alice["runs"][0]["session_id"] == "alice"
+    assert bob["runs"][0]["session_id"] == "bob"
+    assert len(alice["runs"][0]["stages"]) == 5
+
+
+def test_completed_status_normalizes_all_defined_stages():
+    value = _normalize_run_status({
+        "status": "completed", "progress_percent": 72, "stage_status": "running",
+        "current_stage": "phase1_experience_diagnosis", "failed_stage": "phase1_experience_diagnosis",
+        "failed_agent": "agent", "stages": [{"key": "phase1_experience_diagnosis", "status": "failed"}],
+    })
+    assert value["progress_percent"] == 100
+    assert value["stage_status"] == "completed"
+    assert value["current_stage"] == "phase3_fabrication_audit"
+    assert value["current_stage_label"] == "Phase 3 · 编造审计"
+    assert value["failed_stage"] is None
+    assert value["failed_agent"] is None
+    assert len(value["stages"]) == 5
+    assert {stage["status"] for stage in value["stages"]} == {"completed"}
+
+
+@pytest.mark.parametrize("status", ["failed", "interrupted"])
+def test_terminal_status_only_marks_real_stage(status):
+    value = _normalize_run_status({
+        "status": status, "stage_status": status,
+        "current_stage": "phase1_experience_diagnosis",
+        "failed_stage": "phase1_experience_diagnosis",
+        "stages": [
+            {"key": "step0_classification", "status": "completed"},
+            {"key": "phase0_jd_analysis", "status": "completed"},
+        ],
+    })
+    assert [stage["status"] for stage in value["stages"]] == [
+        "completed", "completed", status, "pending", "pending"
+    ]
+
+
+def test_history_and_detail_use_same_normalized_status():
+    raw = {"job_id": "job-1", "status": "completed", "progress_percent": 42,
+           "stages": [{"key": "phase3_fabrication_audit", "status": "running"}]}
+    with patch("api.main.list_cloud_runs", return_value=[raw]), \
+         patch("api.main.jobs", {}), \
+         patch("api.main.get_cloud_run", return_value=raw):
+        history = read_session_runs("web", 20, "")["runs"][0]
+        detail = read_run("job-1", "")
+    assert history == detail
 
 
 def test_real_stage_progress_updates_and_iteration():

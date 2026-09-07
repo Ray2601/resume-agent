@@ -19,6 +19,53 @@ STAGES = [
 ]
 
 
+def _normalize_run_status(run: dict) -> dict:
+    """Return one canonical public status shape for history and detail responses."""
+    data = dict(run)
+    overall = data.get("status") or "pending"
+    stage_keys = {key for key, _ in STAGES}
+    by_key = {}
+    for stage in data.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        key = STAGE_ALIASES.get(stage.get("key", ""), stage.get("key", ""))
+        if key in stage_keys:
+            by_key[key] = {**stage, "key": key}
+
+    if overall == "completed":
+        data.update({
+            "progress_percent": 100,
+            "stage_status": "completed",
+            "current_stage": "phase3_fabrication_audit",
+            "current_stage_label": STAGES[-1][1],
+            "failed_stage": None,
+            "failed_agent": None,
+        })
+        data["stages"] = [
+            {**by_key.get(key, {}), "key": key, "label": label, "status": "completed"}
+            for key, label in STAGES
+        ]
+        return data
+
+    current_key = STAGE_ALIASES.get(data.get("current_stage", ""), data.get("current_stage", ""))
+    if overall in {"failed", "interrupted"}:
+        current_key = STAGE_ALIASES.get(data.get("failed_stage") or current_key,
+                                        data.get("failed_stage") or current_key)
+        if current_key not in stage_keys:
+            current_key = next((key for key, stage in by_key.items()
+                                if stage.get("status") in {"failed", "interrupted"}), "")
+    current_index = next((i for i, (key, _) in enumerate(STAGES) if key == current_key), -1)
+    data["stage_status"] = overall if overall in {"failed", "interrupted"} else data.get("stage_status", "pending")
+    data["stages"] = [
+        {**by_key.get(key, {}), "key": key, "label": label,
+         "status": ("completed" if by_key.get(key, {}).get("status") == "completed" or i < current_index
+                     else overall if overall in {"failed", "interrupted"} and i == current_index
+                     else data.get("stage_status") if i == current_index else "pending")}
+        for i, (key, label) in enumerate(STAGES)
+    ]
+    return data
+
+
 def _connect():
     import psycopg
     url = os.getenv("DATABASE_URL", "")
@@ -292,7 +339,7 @@ def get_cloud_run(job_id: str) -> dict | None:
             result_stages.append(item)
         data["stages"] = result_stages
         data["error"] = data.pop("error_message", "") or ""
-        return data
+        return _normalize_run_status(data)
 
 
 def list_cloud_runs(session_id: str, limit: int = 20) -> list[dict]:
@@ -305,4 +352,4 @@ def list_cloud_runs(session_id: str, limit: int = 20) -> list[dict]:
             FROM deploy_runs WHERE session_id=%s
             ORDER BY created_at DESC LIMIT %s""", (session_id, limit))
         columns = [item.name for item in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [_normalize_run_status(dict(zip(columns, row))) for row in cursor.fetchall()]

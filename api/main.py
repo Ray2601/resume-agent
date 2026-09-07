@@ -16,7 +16,7 @@ from config.prompts.writer_prompt import WRITER_PROMPT_VERSION
 from src.cloud.store import (
     get_cloud_run, list_cloud_runs, save_cloud_failure, save_cloud_job,
     save_cloud_result, update_cloud_progress, mark_stale_cloud_runs_interrupted,
-    STAGES,
+    STAGES, STAGE_ALIASES, _normalize_run_status,
 )
 from src.crewai.pipeline import CrewAIResumePipeline, PipelineStageError
 
@@ -40,10 +40,6 @@ executor = ThreadPoolExecutor(max_workers=int(os.getenv("WORKER_CONCURRENCY", "1
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 _STAGE_BY_KEY = dict(STAGES)
-_STAGE_ALIASES = {"position_classifier": "step0_classification", "industry_decoding": "step0_classification",
-                  "jd_analysis": "phase0_jd_analysis", "experience_diagnosis": "phase1_experience_diagnosis",
-                  "star_writer": "phase2_writing_iteration", "hr_reviewer": "phase2_writing_iteration",
-                  "fact_check": "phase3_fabrication_audit"}
 _STAGE_START = {"step0_classification": 10, "phase0_jd_analysis": 25,
                 "phase1_experience_diagnosis": 40, "phase2_writing_iteration": 45,
                 "phase3_fabrication_audit": 90}
@@ -175,6 +171,7 @@ def _execute(job_id: str, request: RunRequest) -> None:
             "progress_message": "\u4f18\u5316\u5b8c\u6210",
             "final_result": result["final_result"], "final_score": result["final_score"],
             "iterations": result["iterations"], "eval_metrics": result["eval_metrics"],
+            "iteration_history": result.get("history", []),
             "fabrication_report": result["fabrication_report"],
             "traces": result["traces"],
             "prompt_versions": result.get("prompt_versions", {}),
@@ -183,7 +180,7 @@ def _execute(job_id: str, request: RunRequest) -> None:
             jobs[job_id] = public_result
     except Exception as exc:
         raw_failed_stage = getattr(exc, "stage", None) or (last_stage.get("key") if "last_stage" in locals() else "")
-        current_key = _STAGE_ALIASES.get(raw_failed_stage, raw_failed_stage)
+        current_key = STAGE_ALIASES.get(raw_failed_stage, raw_failed_stage)
         failed_agent = getattr(exc, "agent", "")
         failed_iteration = getattr(exc, "iteration", last_stage.get("iteration", 0) if "last_stage" in locals() else 0)
         if current_key:
@@ -232,10 +229,10 @@ def read_run(job_id: str, x_app_token: str = Header(default="")):
     with jobs_lock:
         current = jobs.get(job_id)
     if current:
-        return current
+        return _normalize_run_status(current)
     persisted = get_cloud_run(job_id)
     if persisted:
-        return persisted
+        return _normalize_run_status(persisted)
     raise HTTPException(status_code=404, detail="Run not found")
 
 
@@ -246,4 +243,4 @@ def read_session_runs(
     x_app_token: str = Header(default=""),
 ):
     _authorize(x_app_token)
-    return {"session_id": session_id, "runs": list_cloud_runs(session_id, limit)}
+    return {"session_id": session_id, "runs": [_normalize_run_status(run) for run in list_cloud_runs(session_id, limit)]}
