@@ -156,10 +156,6 @@ def _execute(job_id: str, request: RunRequest) -> None:
             model_id=model_id,
             progress_callback=on_progress,
         )
-        _job_progress(job_id, request, "phase3_fabrication_audit", "completed", 100,
-                      "\u4f18\u5316\u5b8c\u6210", 0)
-        with jobs_lock:
-            jobs[job_id]["status"] = "completed"
         save_cloud_result(job_id, request.session_id, result, model_id, request=request)
         with jobs_lock:
             progress = dict(jobs.get(job_id, {}))
@@ -178,6 +174,18 @@ def _execute(job_id: str, request: RunRequest) -> None:
         }
         with jobs_lock:
             jobs[job_id] = public_result
+        _job_progress(job_id, request, "phase3_fabrication_audit", "completed", 100,
+                      "\u4f18\u5316\u5b8c\u6210", 0)
+        with jobs_lock:
+            jobs[job_id] = {
+                **jobs[job_id],
+                "status": "completed",
+                "stage_status": "completed",
+                "progress_percent": 100,
+                "progress_message": "\u4f18\u5316\u5b8c\u6210",
+                "current_stage": "phase3_fabrication_audit",
+                "current_stage_label": _STAGE_BY_KEY["phase3_fabrication_audit"],
+            }
     except Exception as exc:
         raw_failed_stage = getattr(exc, "stage", None) or (last_stage.get("key") if "last_stage" in locals() else "")
         current_key = STAGE_ALIASES.get(raw_failed_stage, raw_failed_stage)

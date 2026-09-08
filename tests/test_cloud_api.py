@@ -148,6 +148,29 @@ def test_history_and_detail_use_same_normalized_status():
     assert history == detail
 
 
+def test_completed_detail_keeps_all_result_fields():
+    raw = {
+        "job_id": "job-2",
+        "run_id": "run-2",
+        "status": "completed",
+        "final_score": 97,
+        "final_result": "optimized resume",
+        "fabrication_report": {"checked": True},
+        "eval_metrics": {"total": 97, "match": 23},
+        "iteration_history": [{"iteration": 1}],
+        "traces": [{"step_name": "phase3", "agent_name": "auditor"}],
+        "stages": [{"key": "phase3_fabrication_audit", "status": "running"}],
+    }
+    with patch("api.main.jobs", {}), patch("api.main.get_cloud_run", return_value=raw):
+        detail = read_run("job-2", "")
+    assert detail["final_score"] == 97
+    assert detail["final_result"] == "optimized resume"
+    assert detail["fabrication_report"] == {"checked": True}
+    assert detail["eval_metrics"] == {"total": 97, "match": 23}
+    assert detail["iteration_history"] == [{"iteration": 1}]
+    assert detail["traces"] == [{"step_name": "phase3", "agent_name": "auditor"}]
+
+
 def test_real_stage_progress_updates_and_iteration():
     value = request(session_id="progress", max_iterations=3)
     job_id = "job-progress-test"
